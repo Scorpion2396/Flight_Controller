@@ -1,0 +1,133 @@
+/*
+ * EKF_filter.c
+ *
+ *  Created on: 31-Dec-2024
+ *      Author: Saksham Raj
+ */
+
+#include <math.h>
+#include "MPU9250.h"
+#include "Common_Datatype.h"
+#include "MPU9250_Interface.h"
+#include <stdlib.h>
+#include <stdbool.h>
+
+#define M_PI 3.14159265358979323846
+
+// Define Extended Kalman filter structure for the rotation matrix
+typedef struct {
+    float R[3][3];       // Rotation matrix
+    float gyro_bias[3];  // Gyroscope bias
+    float P[9][9];       // Error covariance matrix
+    float Q[9][9];       // Process noise covariance
+    float R_measure;     // Measurement noise covariance
+} EKF_RotationMatrix;
+
+// Initialize the EKF for rotation matrix
+void EKF_Init_RotationMatrix(EKF_RotationMatrix *ekf) {
+    // Initialize rotation matrix (identity matrix)
+    ekf->R[0][0] = 1.0f;
+    ekf->R[0][1] = 0.0f;
+    ekf->R[0][2] = 0.0f;
+    ekf->R[1][0] = 0.0f;
+    ekf->R[1][1] = 1.0f;
+    ekf->R[1][2] = 0.0f;
+    ekf->R[2][0] = 0.0f;
+    ekf->R[2][1] = 0.0f;
+    ekf->R[2][2] = 1.0f;
+
+    // Initialize gyroscope bias
+    ekf->gyro_bias[0] = 0.0f;
+    ekf->gyro_bias[1] = 0.0f;
+    ekf->gyro_bias[2] = 0.0f;
+
+    // Initialize error covariance
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            ekf->P[i][j] = 0.0f;
+        }
+    }
+    ekf->P[0][0] = 1.0f; // Set diagonal covariance values to some initial value
+
+    // Process noise covariance for the rotation matrix
+    ekf->Q[0][0] = 0.001f;
+    ekf->Q[1][1] = 0.001f;
+    ekf->Q[2][2] = 0.001f;
+    ekf->Q[3][3] = 0.003f; // Gyroscope bias noise
+    ekf->Q[4][4] = 0.003f;
+    ekf->Q[5][5] = 0.003f;
+    ekf->Q[6][6] = 0.001f; // Accelerometer noise
+    ekf->Q[7][7] = 0.001f;
+    ekf->Q[8][8] = 0.001f;
+
+    ekf->R_measure = 0.03f; // Measurement noise covariance
+}
+
+// Function to update the rotation matrix using EKF
+void EKF_Update_RotationMatrix(EKF_RotationMatrix *ekf, float gyro_x, float gyro_y, float gyro_z,
+                               float accel_x, float accel_y, float accel_z, float dt) {
+    // Predict step: update the rotation matrix using gyroscope
+    float omega[3] = {gyro_x - ekf->gyro_bias[0], gyro_y - ekf->gyro_bias[1], gyro_z - ekf->gyro_bias[2]};
+
+    // Integrate gyroscope data to update the rotation matrix (skew-symmetric matrix)
+    float gyro_matrix[3][3] = {
+        {0, -omega[2], omega[1]},
+        {omega[2], 0, -omega[0]},
+        {-omega[1], omega[0], 0}
+    };
+
+    // Update the rotation matrix using gyroscope (Euler integration)
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            ekf->R[i][j] += gyro_matrix[i][j] * dt;
+        }
+    }
+
+    // Accelerometer-based measurement correction (orientation relative to gravity)
+    float accel_magnitude = sqrt(accel_x * accel_x + accel_y * accel_y + accel_z * accel_z);
+    float accel_normalized[3] = {accel_x / accel_magnitude, accel_y / accel_magnitude, accel_z / accel_magnitude};
+
+    // Measurement update: correct the prediction using accelerometer data (simplified correction)
+    float measurement_error[3];
+    measurement_error[0] = accel_normalized[0] - ekf->R[0][0];
+    measurement_error[1] = accel_normalized[1] - ekf->R[1][1];
+    measurement_error[2] = accel_normalized[2] - ekf->R[2][2];
+
+    // Update the rotation matrix based on the measurement error
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            ekf->R[i][j] += ekf->R_measure * measurement_error[i] * measurement_error[j];
+        }
+    }
+
+    // Update the error covariance matrix
+    // For simplicity, we assume the error covariance matrix can be updated as a constant for now
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            ekf->P[i][j] += ekf->Q[i][j];
+        }
+    }
+}
+
+// Function to apply EKF and update rotation matrix
+void EKF_Filter_Rotation(MPU9250_Data *mpu_data, float dt) {
+    static EKF_RotationMatrix ekf;
+
+    // Initialize the EKF if not already done
+    static bool is_initialized = 0;
+    if (!is_initialized) {
+        EKF_Init_RotationMatrix(&ekf);
+        is_initialized = 1;
+    }
+
+    // Apply the EKF update with accelerometer and gyroscope data
+    EKF_Update_RotationMatrix(&ekf, mpu_data->gyro_x, mpu_data->gyro_y, mpu_data->gyro_z,
+                              mpu_data->accel_x, mpu_data->accel_y, mpu_data->accel_z, dt);
+
+    // Store the updated rotation matrix in the mpu_data structure
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            mpu_data->rotation_matrix[i][j] = ekf.R[i][j];
+        }
+    }
+}
